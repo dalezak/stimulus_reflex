@@ -368,19 +368,97 @@ Just because you are authenticated as a user doesn't mean you should have access
 The `before_reflex` callback is the best place to handle privilege checks, because you can call `throw :abort` to prevent the Reflex if the user is making decisions above their pay grade.
 
 ### CanCanCan
+If you are using [CanCanCan](https://github.com/CanCanCommunity/cancancan) for authorization, you'll need to use different strategies for _selector morphs_ vs _page morphs_. 
 
-If you are using [CanCanCan](https://github.com/CanCanCommunity/cancancan) for authorization, you can [create an](https://github.com/CanCanCommunity/cancancan/blob/develop/docs/Defining-Abilities:-Best-Practices.md#split-your-abilityrb-file) `Ability` in your Reflex classes. You can use the `accessible_by` method to ensure you are only getting permitted records for the current user.
+#### Selector Morphs With CanCanCan
+For _selector morphs_, you have two options for using CanCanCan's `accessible_by` in your Reflex.
 
+##### Option 1: create new ability for user
 ```ruby
-def change_classroom
-  ability = ClassroomAbility.new(current_user)
-  @classrooms = @school.classrooms.accessible_by(ability)
-end
+class ClassroomsReflex < ApplicationReflex
+  delegate :current_user, to: :connection
+  
+  def change_school
+    if element.value.present?
+      user_ability = Ability.new(current_user)
+      school = School.find(element.value)
+      classrooms = school.classrooms.accessible_by(user_ability).order(:name).all
+    else
+      school = nil
+      classrooms = []
+    end
+    morph "#classrooms", render(partial: "/classrooms/classrooms", locals: { school: school, classrooms: classrooms })
+  end
+end  
+```
+
+##### Option 2: delegate current_ability to controller
+```ruby
+class ClassroomsReflex < ApplicationReflex
+  delegate :current_ability, to: :controller
+  
+  def change_school
+    if element.value.present?
+      school = School.find(element.value)
+      classrooms = school.classrooms.accessible_by(current_ability).order(:name).all
+    else
+      school = nil
+      classrooms = []
+    end
+    morph "#classrooms", render(partial: "/classrooms/classrooms", locals: { school: school, classrooms: classrooms })
+  end
+end  
 ```
 
 {% hint style="danger" %}
-If you're using Page Morph Reflexes, you cannot use `authorize!` or `accessible_by` methods in your Reflex action. Instead, move your CanCanCan logic into the controller action.
+Note, for selector morphs doing _delegate_ to _controller_ will increase response time adding 10-25ms hit on every Reflex. So _Option 1_ is recommended when possible.
 {% endhint %}
+
+#### Page Morphs With CanCanCan
+For _page morphs_, you **can not** delegate `current_ability` to the controller, due to the fact that _both_ StimulusReflex and CanCanCan instantiate the controller causing an issue with the instance variables set in your Reflex. So you have two options for _page morphs_ instead.
+
+##### Option 1: create new ability for user
+```ruby
+class ClassroomsReflex < ApplicationReflex
+  delegate :current_user, to: :connection
+  
+  def change_school
+    if element.value.present?
+      user_ability = Ability.new(current_user)
+      @school = School.find(element.value)
+      @classrooms = @school.classrooms.accessible_by(user_ability).order(:name).all
+    else
+      @school = nil
+      @classrooms = []
+    end
+  end
+end  
+```
+
+##### Option 2: move accessible_by calls to controller
+```ruby
+class ClassroomsReflex < ApplicationReflex
+  def change_school
+    if element.value.present?
+      @school = School.find(element.value)
+    else
+      @school = nil
+    end
+  end
+end  
+```
+
+```ruby
+class ClassroomsController < ApplicationController
+  def index
+    authorize! :index, School
+    authorize! :index, Classroom
+    @school ||= School.find(params[:school_id)
+    @schools ||= School.accessible_by(current_ability).order(:name).all
+    @classrooms ||= @school.present? ? @school.classrooms.accessible_by(current_ability).order(:name).all : []
+  end
+end
+```
 
 ### Pundit
 
